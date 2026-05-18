@@ -11,15 +11,28 @@ const { validateSecretsMasterKeyStrength } = require("../services/secretCrypto")
 
 const jwtSecret = required("JWT_SECRET", "dev-only-change-me");
 
+/** Browser origins always permitted (local CRA + production marketing). */
+const STATIC_CORS_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://citematch.com",
+  "https://www.citematch.com",
+];
+
 module.exports = {
   port: Number(process.env.PORT || 4000),
   jwtSecret,
   clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
-  /** Comma-separated extra browser origins for CORS (e.g. admin CRA on http://localhost:3001). */
-  additionalCorsOrigins: String(process.env.ADDITIONAL_CORS_ORIGINS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
+  /** Comma-separated extra browser origins for CORS (merged with STATIC_CORS_ORIGINS). */
+  additionalCorsOrigins: [
+    ...new Set([
+      ...STATIC_CORS_ORIGINS,
+      ...String(process.env.ADDITIONAL_CORS_ORIGINS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ]),
+  ],
   mongoUri: required("MONGODB_URI"),
   /** Dev only: skips real TXT lookups and marks custom domains verified. */
   skipDnsVerify: process.env.SKIP_DNS_VERIFY === "true",
