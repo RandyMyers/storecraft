@@ -7,6 +7,8 @@ const router = express.Router();
 router.use(requireAdminAuth);
 
 router.get("/hostinger/status", adminHostingerController.status);
+router.get("/hostinger/platform/conflicts", adminHostingerController.listPlatformConflicts);
+router.post("/hostinger/platform/setup", adminHostingerController.setupPlatformPublishHosting);
 router.get("/hostinger/sites", adminHostingerController.listTenantSites);
 router.get("/hostinger/domains", adminHostingerController.listCustomDomains);
 router.get("/hostinger/portfolio", adminHostingerController.listPortfolio);

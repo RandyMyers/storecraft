@@ -118,19 +118,20 @@ module.exports = {
 
   /**
    * How tenant `{sub}.PLATFORM_PUBLISH_DOMAIN` is wired on publish:
-   * - dns_cname (default): CNAME to main site CDN — same app as citematch.com
-   * - websites_api: legacy POST /api/hosting/v1/websites (often empty docroot)
-   * - both: DNS + websites API
+   * - parent_website (default): remove tenant CNAME, POST website with parent_domain + main public_html
+   * - dns_cname: CNAME to CDN only (often shows Hostinger "parked domain" without hPanel subdomain)
+   * - websites_api: legacy standalone website (empty docroot)
+   * - both: DNS CNAME + websites API (not recommended)
    */
-  hostingerProvisionMode: String(process.env.HOSTINGER_PROVISION_MODE || "dns_cname")
+  hostingerProvisionMode: String(process.env.HOSTINGER_PROVISION_MODE || "parent_website")
     .trim()
     .toLowerCase(),
 
   /** Override CNAME target for tenant labels (default: inferred from apex/www DNS). */
   hostingerTenantCnameTarget: String(process.env.HOSTINGER_TENANT_CNAME_TARGET || "").trim(),
 
-  /** One-time add *.apex CNAME when provisioning (if zone API allows). */
-  hostingerEnsureWildcardCname: process.env.HOSTINGER_ENSURE_WILDCARD_CNAME === "true",
+  /** Add *.apex CNAME on publish/setup (disable with HOSTINGER_ENSURE_WILDCARD_CNAME=false). */
+  hostingerEnsureWildcardCname: process.env.HOSTINGER_ENSURE_WILDCARD_CNAME !== "false",
 };
 
 validateSecretsMasterKeyStrength(module.exports.secretsMasterKey, process.env.NODE_ENV || "");

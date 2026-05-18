@@ -24,8 +24,19 @@ const {
   createHostingWebsite,
   verifyDomainOwnership,
 } = require("./integrations/hostingerApi");
-const { ensurePlatformTenantDns, ensureWildcardTenantDns } = require("./platformTenantDns");
+const {
+  ensurePlatformTenantDns,
+  ensureWildcardTenantDns,
+  removePlatformTenantCname,
+} = require("./platformTenantDns");
 const { probePublishLiveUrl } = require("./publishLiveProbe");
+
+/** @param {number} ms */
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 /**
  * Load active Hostinger API token from encrypted admin secret (provider: hostinger).
@@ -255,14 +266,179 @@ async function resolveHostingOrderId(creds, apex) {
   return null;
 }
 
+function getProvisionMode() {
+  return String(config.hostingerProvisionMode || "parent_website").trim().toLowerCase();
+}
+
+function usesParentWebsiteProvision() {
+  const mode = getProvisionMode();
+  return mode === "parent_website" || mode === "";
+}
+
 function usesWebsitesApiProvision() {
-  const mode = config.hostingerProvisionMode || "dns_cname";
-  return mode === "websites_api" || mode === "both";
+  const mode = getProvisionMode();
+  return mode === "websites_api";
 }
 
 function usesDnsCnameProvision() {
-  const mode = config.hostingerProvisionMode || "dns_cname";
-  return mode === "dns_cname" || mode === "both" || mode === "";
+  const mode = getProvisionMode();
+  return mode === "dns_cname" || mode === "both";
+}
+
+/**
+ * Main platform site on shared hosting (for parent_domain + root_directory on tenant create).
+ * @param {string} token
+ * @param {string} [apex]
+ */
+async function resolveMainPlatformWebsite(token, apex) {
+  const apexNorm = String(apex || getPlatformPublishDomain()).trim().toLowerCase();
+  const listed = await listHostingWebsites(token, { domain: apexNorm, per_page: 50 });
+  if (!listed.ok || !listed.websites?.length) {
+    return null;
+  }
+  const sites = listed.websites;
+  const main =
+    sites.find(
+      (w) =>
+        String(w.domain || "").toLowerCase() === apexNorm &&
+        String(w.vhost_type || "").toLowerCase() === "main"
+    ) ||
+    sites.find((w) => String(w.vhost_type || "").toLowerCase() === "main") ||
+    sites.find((w) => String(w.domain || "").toLowerCase() === apexNorm) ||
+    sites[0];
+  if (!main) return null;
+  const orderId = Number(main.order_id);
+  return {
+    domain: String(main.domain || apexNorm).toLowerCase(),
+    order_id: Number.isFinite(orderId) && orderId > 0 ? Math.floor(orderId) : null,
+    root_directory: String(main.root_directory || "").trim() || null,
+    vhost_type: String(main.vhost_type || ""),
+  };
+}
+
+/**
+ * @param {import("mongoose").Document} siteDoc
+ * @param {{ token: string }} creds
+ * @param {string} fqdn
+ * @param {number} orderId
+ * @param {string} apex
+ */
+async function provisionParentWebsiteSubdomain(siteDoc, creds, fqdn, orderId, apex) {
+  const subdomain = String(siteDoc.subdomain || "").trim().toLowerCase();
+  const apexNorm = String(apex || getPlatformPublishDomain()).trim().toLowerCase();
+
+  logProvision("log", "parent_website: remove tenant CNAME (parked page fix)", { subdomain, apex: apexNorm });
+  const dnsRemoved = await removePlatformTenantCname(creds.token, subdomain, apexNorm);
+  if (!dnsRemoved.ok) {
+    logProvision("error", "remove CNAME failed", dnsRemoved);
+  }
+
+  const mainSite = await resolveMainPlatformWebsite(creds.token, apexNorm);
+  const parentDomain = mainSite?.domain || apexNorm;
+  const rootDirectory = mainSite?.root_directory || null;
+  logProvision("log", "parent_website: main site context", {
+    fqdn,
+    parentDomain,
+    rootDirectory: rootDirectory || "(none from API)",
+    orderId,
+  });
+
+  const listed = await listHostingWebsites(creds.token, { domain: fqdn, per_page: 10 });
+  if (listed.ok && listed.websites?.length) {
+    const existing = listed.websites[0];
+    const existingRoot = String(existing.root_directory || "").trim();
+    if (rootDirectory && existingRoot && existingRoot === rootDirectory) {
+      logProvision("log", "parent_website: tenant vhost already uses main public_html", { fqdn });
+      return {
+        ok: true,
+        skipped: true,
+        alreadyExists: true,
+        message: `${fqdn} already linked to the main site folder`,
+        dnsRemoved,
+      };
+    }
+    if (existingRoot && rootDirectory && existingRoot !== rootDirectory) {
+      logProvision("error", "parent_website: separate website docroot blocks theme", {
+        fqdn,
+        existingRoot,
+        expectedRoot: rootDirectory,
+      });
+      siteDoc.hostingerSubdomainStatus = "hosting_pending";
+      siteDoc.hostingerSubdomainNote =
+        `Delete the separate Hostinger Website for ${fqdn} (Websites list), then publish again.`;
+      siteDoc.hostingerSubdomainAt = new Date();
+      await siteDoc.save();
+      return {
+        ok: true,
+        live: false,
+        hostingPending: true,
+        fqdn,
+        message:
+          "Published. Remove the extra Hostinger Website for this subdomain, then click Publish again.",
+        dnsRemoved,
+      };
+    }
+    return {
+      ok: true,
+      skipped: true,
+      alreadyExists: true,
+      message: `${fqdn} already listed in Hostinger websites`,
+      dnsRemoved,
+    };
+  }
+
+  const verify = await verifyDomainOwnership(creds.token, fqdn);
+  if (!verify.ok) {
+    logProvision("error", "verify-ownership failed", { fqdn, message: verify.message });
+  }
+
+  const createBody = {
+    domain: fqdn,
+    order_id: orderId,
+    parent_domain: parentDomain,
+  };
+  if (rootDirectory) createBody.root_directory = rootDirectory;
+
+  const created = await createHostingWebsite(creds.token, createBody);
+  if (!created.ok) {
+    siteDoc.hostingerSubdomainStatus = "failed";
+    siteDoc.hostingerSubdomainNote = String(created.message || "Hostinger create website failed").slice(0, 500);
+    siteDoc.hostingerSubdomainAt = new Date();
+    await siteDoc.save();
+    return { ok: false, status: created.status || 502, message: created.message, fqdn, orderId, dnsRemoved };
+  }
+
+  siteDoc.hostingerSubdomainStatus = "provisioned";
+  siteDoc.hostingerSubdomainNote = "Hostinger is linking this subdomain to your main site folder (usually 2–15 minutes).";
+  siteDoc.hostingerSubdomainAt = new Date();
+  await siteDoc.save();
+
+  return {
+    ok: true,
+    async: true,
+    message: `Hostinger is setting up ${fqdn} on the same folder as ${parentDomain}`,
+    dnsRemoved,
+    parentDomain,
+    rootDirectory,
+  };
+}
+
+/**
+ * @param {string} fqdn
+ * @param {{ attempts?: number, delayMs?: number }} [opts]
+ */
+async function probePublishLiveUrlWithRetries(fqdn, opts = {}) {
+  const attempts = Math.max(1, Number(opts.attempts) || 4);
+  const delayMs = Math.max(0, Number(opts.delayMs) || 8000);
+  let probe = await probePublishLiveUrl(fqdn);
+  if (probe.live || attempts === 1) return probe;
+  for (let i = 1; i < attempts; i += 1) {
+    logProvision("log", "live probe retry", { fqdn, attempt: i + 1, attempts, reason: probe.reason });
+    await sleep(delayMs);
+    probe = await probePublishLiveUrl(fqdn);
+    if (probe.live) return probe;
+  }
+  return probe;
 }
 
 /**
@@ -285,10 +461,29 @@ async function applyLiveProbeToSite(siteDoc, probe, fqdn) {
     };
   }
 
+  if (probe.isHostingerParked) {
+    const apex = getPlatformPublishDomain();
+    siteDoc.hostingerSubdomainStatus = "hosting_pending";
+    siteDoc.hostingerSubdomainNote = usesParentWebsiteProvision()
+      ? "Hostinger is still linking this subdomain to your site folder. Wait a few minutes and publish again."
+      : `In hPanel: Domains → ${apex} → Subdomains → add this subdomain → document root = same public_html as ${apex}.`;
+    siteDoc.hostingerSubdomainAt = new Date();
+    await siteDoc.save();
+    return {
+      ok: true,
+      live: false,
+      hostingPending: true,
+      fqdn,
+      message: usesParentWebsiteProvision()
+        ? "Published. Preview works. Live URL is still connecting on Hostinger — try Publish again in a few minutes."
+        : "Published. Preview works. Add this host under Subdomains in hPanel (same public_html), then publish again.",
+    };
+  }
+
   if (probe.isHostingerDefault) {
     siteDoc.hostingerSubdomainStatus = "hosting_pending";
     siteDoc.hostingerSubdomainNote =
-      "DNS is set but Hostinger still shows the default page. In hPanel, remove the separate website for this subdomain OR set its document root to the same public_html as citematch.com.";
+      "Remove the separate Hostinger Website for this host, then add it under Domains → Subdomains with the same public_html as citematch.com.";
     siteDoc.hostingerSubdomainAt = new Date();
     await siteDoc.save();
     return {
@@ -297,12 +492,18 @@ async function applyLiveProbeToSite(siteDoc, probe, fqdn) {
       hostingPending: true,
       fqdn,
       message:
-        "Published. Preview works now. Live URL still shows Hostinger’s empty site — fix document root in hPanel (see admin note).",
+        "Published. Preview works now. Live URL still shows Hostinger’s empty site — fix in hPanel (see note).",
     };
   }
 
   siteDoc.hostingerSubdomainStatus = "hosting_pending";
-  siteDoc.hostingerSubdomainNote = `Live URL not ready yet (${probe.reason}). Use preview; try again in a few minutes.`;
+  const hint =
+    probe.reason === "ssl_error"
+      ? "SSL may still be issuing for this host — wait 15–30 min or enable SSL on the subdomain in hPanel."
+      : probe.reason === "timeout"
+        ? "Host is slow to respond — wait a few minutes and publish again."
+        : "DNS may still be updating — wait a few minutes, or add Subdomains in hPanel (same public_html).";
+  siteDoc.hostingerSubdomainNote = `Live URL not ready yet (${probe.reason}). ${hint}`;
   siteDoc.hostingerSubdomainAt = new Date();
   await siteDoc.save();
   return {
@@ -377,7 +578,7 @@ async function provisionPlatformSubdomain(siteDoc) {
   logProvision("log", "resolved fqdn", { siteId, fqdn, apex });
 
   let orderId = null;
-  if (usesWebsitesApiProvision()) {
+  if (usesParentWebsiteProvision() || usesWebsitesApiProvision()) {
     orderId = await resolveHostingOrderId(creds, apex);
     if (!orderId) {
       logProvision("error", "could not resolve hosting order_id", { siteId, fqdn, apex });
@@ -389,7 +590,7 @@ async function provisionPlatformSubdomain(siteDoc) {
       };
     }
   }
-  const results = { fqdn, orderId, dns: null, websites: null, wildcard: null };
+  const results = { fqdn, orderId, dns: null, websites: null, wildcard: null, parentWebsite: null };
 
   if (usesDnsCnameProvision()) {
     logProvision("log", "ensure wildcard DNS (optional)", { apex });
@@ -413,7 +614,16 @@ async function provisionPlatformSubdomain(siteDoc) {
     }
   }
 
-  if (usesWebsitesApiProvision()) {
+  if (usesParentWebsiteProvision()) {
+    logProvision("log", "parent_website provision", { fqdn, orderId, apex });
+    results.parentWebsite = await provisionParentWebsiteSubdomain(siteDoc, creds, fqdn, orderId, apex);
+    if (results.parentWebsite && results.parentWebsite.ok === false) {
+      return { ...results.parentWebsite, fqdn, dns: results.dns };
+    }
+    if (results.parentWebsite?.hostingPending) {
+      return { ...results.parentWebsite, fqdn, dns: results.dns, parentWebsite: results.parentWebsite };
+    }
+  } else if (usesWebsitesApiProvision()) {
     logProvision("log", "websites API provision", { fqdn, orderId });
     results.websites = await provisionWebsitesApiVhost(siteDoc, creds, fqdn, orderId);
     if (results.websites && !results.websites.ok) {
@@ -422,7 +632,10 @@ async function provisionPlatformSubdomain(siteDoc) {
   }
 
   logProvision("log", "probing live URL", { fqdn });
-  const probe = await probePublishLiveUrl(fqdn);
+  const probe = await probePublishLiveUrlWithRetries(fqdn, {
+    attempts: usesParentWebsiteProvision() ? 4 : 1,
+    delayMs: 8000,
+  });
   logProvision("log", "live probe", { fqdn, ...probe });
 
   const liveResult = await applyLiveProbeToSite(siteDoc, probe, fqdn);
@@ -433,6 +646,7 @@ async function provisionPlatformSubdomain(siteDoc) {
     orderId,
     dns: results.dns,
     websites: results.websites,
+    parentWebsite: results.parentWebsite,
     liveProbe: probe,
   };
 }

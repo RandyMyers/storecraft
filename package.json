@@ -15,7 +15,9 @@
     "worker:ssl:once": "node scripts/worker-ssl-once.js",
     "create:admin": "node scripts/createAdminAccount.js",
     "audit:hostinger": "node scripts/hostinger-platform-audit.js",
-    "fix:tenant-dns": "node scripts/fix-all-tenant-dns.js"
+    "fix:tenant-dns": "node scripts/fix-all-tenant-dns.js",
+    "setup:platform-hosting": "node scripts/fix-all-tenant-dns.js",
+    "debug:publish": "node scripts/debug-publish-tenant.js"
   },
   "engines": {
     "node": ">=18"

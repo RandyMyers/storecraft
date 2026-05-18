@@ -4,7 +4,12 @@
  */
 
 const config = require("../config");
-const { getDnsRecords, validateDnsRecords, updateDnsRecords } = require("./integrations/hostingerApi");
+const {
+  getDnsRecords,
+  validateDnsRecords,
+  updateDnsRecords,
+  deleteDnsRecords,
+} = require("./integrations/hostingerApi");
 
 function getPlatformPublishDomain() {
   return String(config.platformPublishDomain || "citematch.com").trim() || "citematch.com";
@@ -183,8 +188,44 @@ async function ensureWildcardTenantDns(token, apex) {
   return updateDnsRecords(token, zone, body);
 }
 
+/**
+ * Remove tenant CNAME (API-added records often show Hostinger "parked domain" without a vhost).
+ * @param {string} token
+ * @param {string} subdomainLabel
+ * @param {string} [apex]
+ */
+async function removePlatformTenantCname(token, subdomainLabel, apex) {
+  const label = String(subdomainLabel || "").trim().toLowerCase();
+  const zone = String(apex || getPlatformPublishDomain()).trim().toLowerCase();
+  if (!label || !zone) {
+    return { ok: false, status: 400, message: "Invalid label or zone" };
+  }
+
+  const zoneRecords = await getDnsRecords(token, zone);
+  if (!zoneRecords.ok) {
+    return { ok: false, status: zoneRecords.status, message: zoneRecords.message };
+  }
+
+  const hasCname = tenantCnameExists(zoneRecords.records, label);
+  if (!hasCname) {
+    return { ok: true, skipped: true, message: `No CNAME to remove for ${label}` };
+  }
+
+  const deleted = await deleteDnsRecords(token, zone, {
+    filters: [{ name: label, type: "CNAME" }],
+  });
+  if (!deleted.ok) {
+    return deleted;
+  }
+  return {
+    ok: true,
+    message: `Removed CNAME ${label}.${zone} (avoids parked-domain page)`,
+  };
+}
+
 module.exports = {
   ensurePlatformTenantDns,
   ensureWildcardTenantDns,
+  removePlatformTenantCname,
   inferPlatformCnameTarget,
 };

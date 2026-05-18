@@ -161,6 +161,23 @@ async function updateDnsRecords(token, zone, body) {
 /**
  * @param {string} token
  * @param {string} zone
+ * @param {{ filters: Array<{ name: string, type: string }> }} body
+ */
+async function deleteDnsRecords(token, zone, body) {
+  const z = encodeURIComponent(String(zone || "").trim().toLowerCase());
+  const out = await hostingerRequest(token, `/api/dns/v1/zones/${z}`, {
+    method: "DELETE",
+    body,
+  });
+  if (!out.ok) {
+    return { ok: false, status: out.status, message: out.message, data: out.data };
+  }
+  return { ok: true, status: out.status, message: "DNS records deleted" };
+}
+
+/**
+ * @param {string} token
+ * @param {string} zone
  * @param {{ overwrite?: boolean, zone: unknown[] }} body
  */
 async function validateDnsRecords(token, zone, body) {
@@ -243,10 +260,16 @@ async function createHostingWebsite(token, body) {
     logHostinger("error", "createHostingWebsite validation failed", { domain, orderId });
     return { ok: false, status: 400, message: "domain and order_id are required" };
   }
-  logHostinger("log", "createHostingWebsite (subdomain vhost)", { domain, order_id: Math.floor(orderId) });
+  const payload = { domain, order_id: Math.floor(orderId) };
+  const parent = String(body?.parent_domain || "").trim().toLowerCase();
+  const rootDir = String(body?.root_directory || "").trim();
+  if (parent) payload.parent_domain = parent;
+  if (rootDir) payload.root_directory = rootDir;
+
+  logHostinger("log", "createHostingWebsite (tenant vhost)", payload);
   const out = await hostingerRequest(token, "/api/hosting/v1/websites", {
     method: "POST",
-    body: { domain, order_id: Math.floor(orderId) },
+    body: payload,
   });
   if (!out.ok) {
     logHostinger("error", "createHostingWebsite failed", domain, out.status, out.message);
@@ -278,6 +301,7 @@ module.exports = {
   listPortfolioDomains,
   getDnsRecords,
   updateDnsRecords,
+  deleteDnsRecords,
   validateDnsRecords,
   verifyDomainOwnership,
   listHostingOrders,

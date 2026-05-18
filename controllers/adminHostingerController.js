@@ -20,6 +20,10 @@ const {
   listHostingWebsites,
   generateFreeSubdomain,
 } = require("../services/integrations/hostingerApi");
+const {
+  listConflictingAddonWebsites,
+  runPlatformPublishSetup,
+} = require("../services/platformHostingSetup");
 
 function clientIp(req) {
   return String(req.ip || req.headers["x-forwarded-for"] || "").split(",")[0].trim();
@@ -40,11 +44,51 @@ exports.status = async (req, res) => {
     hostingOrderId,
     hostingOrderIdFromEnv: config.hostingerHostingOrderId || null,
     autoProvisionSubdomain: Boolean(config.hostingerAutoProvisionSubdomain),
+    provisionMode: config.hostingerProvisionMode || "parent_website",
+    ensureWildcardCname: Boolean(config.hostingerEnsureWildcardCname),
     notes:
-      "Tenant URLs: {sub}." +
+      "Recommended: dns_cname + shared public_html. Tenant hosts use DNS CNAME to apex CDN; remove separate Hostinger websites for {sub}." +
       apex +
-      " via POST /api/hosting/v1/websites (shared plan order_id). Confirm same public_html in hPanel. DNS TXT API for custom domains.",
+      " in hPanel if live URL shows default page.",
   });
+};
+
+/** GET — addon websites that block shared public_html (delete in hPanel). */
+exports.listPlatformConflicts = async (req, res) => {
+  const creds = await getHostingerCredentials();
+  if (!creds?.token) {
+    res.status(503).json({ error: "Hostinger API token not configured" });
+    return;
+  }
+  const out = await listConflictingAddonWebsites(creds.token);
+  if (!out.ok) {
+    res.status(out.status || 502).json({ error: out.message });
+    return;
+  }
+  res.json(out);
+};
+
+/** POST — wildcard CNAME + all tenant DNS + live probes (recommended fix). */
+exports.setupPlatformPublishHosting = async (req, res) => {
+  const out = await runPlatformPublishSetup();
+  if (!out.ok) {
+    res.status(out.status || 502).json({ error: out.message });
+    return;
+  }
+
+  await appendAudit({
+    action: "hostinger_platform_setup",
+    source: "admin_api",
+    meta: {
+      apex: out.apex,
+      conflictCount: out.conflicts?.websites?.length || 0,
+      summary: out.summary,
+    },
+    requestId: req.requestId || "",
+    clientIp: clientIp(req),
+  });
+
+  res.json(out);
 };
 
 exports.listHostingOrders = async (req, res) => {
