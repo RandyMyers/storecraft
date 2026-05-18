@@ -69,12 +69,12 @@ const siteSchema = new mongoose.Schema(
     publishedAt: { type: Date, default: null },
 
     /**
-     * Gen-1 shared hosting: `{subdomain}` on PLATFORM_PUBLISH_DOMAIN via Hostinger websites API or hPanel.
-     * manual_required | provisioned | failed
+     * Gen-1 shared hosting: `{subdomain}` on PLATFORM_PUBLISH_DOMAIN.
+     * live = publish URL serves platform SPA + theme; hosting_pending = DNS ok but wrong vhost/docroot.
      */
     hostingerSubdomainStatus: {
       type: String,
-      enum: ["manual_required", "provisioned", "failed"],
+      enum: ["manual_required", "provisioned", "hosting_pending", "live", "failed"],
       default: "manual_required",
     },
     hostingerSubdomainNote: { type: String, default: "", trim: true },

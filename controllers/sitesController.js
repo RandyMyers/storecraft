@@ -703,6 +703,8 @@ exports.publish = async (req, res) => {
   }
 
   const fresh = await Site.findById(site._id).lean();
+  const fqdn = fresh ? platformFqdnForSubdomain(fresh.subdomain) : platformFqdnForSubdomain(site.subdomain);
+  const contentLive = site.pages.some((p) => p.published != null && isBlocks(p.published));
 
   res.json({
     ok: true,
@@ -711,8 +713,10 @@ exports.publish = async (req, res) => {
       (p) => p.publishedPrevious != null && isBlocks(p.publishedPrevious),
     ),
     hostinger,
-    liveUrl: fresh ? `https://${platformFqdnForSubdomain(fresh.subdomain)}` : null,
+    contentLive,
+    liveUrl: fqdn ? `https://${fqdn}` : null,
     previewUrl: fresh ? `/s/${fresh.subdomain}` : null,
+    liveProbe: hostinger?.liveProbe || null,
     hostingerSubdomainStatus: fresh?.hostingerSubdomainStatus || site.hostingerSubdomainStatus,
     hostingerSubdomainNote: fresh?.hostingerSubdomainNote || "",
   });

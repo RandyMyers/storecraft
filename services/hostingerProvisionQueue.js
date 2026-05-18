@@ -13,7 +13,7 @@ function queueProvisionPlatformSubdomain(siteId) {
       await maybeProvisionPlatformSubdomain(site);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[hostinger] auto-provision failed", siteId, err?.message || err);
+      console.error("[hostinger-provision] queue auto-provision failed", siteId, err?.message || err, err);
     }
   });
 }

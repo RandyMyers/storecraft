@@ -117,6 +117,8 @@ exports.listTenantSites = async (req, res) => {
   const counts = {
     manual_required: await Site.countDocuments({ hostingerSubdomainStatus: "manual_required" }),
     provisioned: await Site.countDocuments({ hostingerSubdomainStatus: "provisioned" }),
+    hosting_pending: await Site.countDocuments({ hostingerSubdomainStatus: "hosting_pending" }),
+    live: await Site.countDocuments({ hostingerSubdomainStatus: "live" }),
     failed: await Site.countDocuments({ hostingerSubdomainStatus: "failed" }),
     total: await Site.countDocuments({}),
   };
@@ -376,9 +378,11 @@ exports.markSubdomainProvisioned = async (req, res) => {
 
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const status = String(body.status || "provisioned").trim();
-  const allowed = new Set(["manual_required", "provisioned", "failed"]);
+  const allowed = new Set(["manual_required", "provisioned", "hosting_pending", "live", "failed"]);
   if (!allowed.has(status)) {
-    res.status(400).json({ error: "status must be manual_required, provisioned, or failed" });
+    res.status(400).json({
+      error: "status must be manual_required, provisioned, hosting_pending, live, or failed",
+    });
     return;
   }
 

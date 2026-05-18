@@ -115,6 +115,22 @@ module.exports = {
 
   /** After signup / site create, call Hostinger API to add `{subdomain}.PLATFORM_PUBLISH_DOMAIN`. */
   hostingerAutoProvisionSubdomain: process.env.HOSTINGER_AUTO_PROVISION_SUBDOMAIN === "true",
+
+  /**
+   * How tenant `{sub}.PLATFORM_PUBLISH_DOMAIN` is wired on publish:
+   * - dns_cname (default): CNAME to main site CDN — same app as citematch.com
+   * - websites_api: legacy POST /api/hosting/v1/websites (often empty docroot)
+   * - both: DNS + websites API
+   */
+  hostingerProvisionMode: String(process.env.HOSTINGER_PROVISION_MODE || "dns_cname")
+    .trim()
+    .toLowerCase(),
+
+  /** Override CNAME target for tenant labels (default: inferred from apex/www DNS). */
+  hostingerTenantCnameTarget: String(process.env.HOSTINGER_TENANT_CNAME_TARGET || "").trim(),
+
+  /** One-time add *.apex CNAME when provisioning (if zone API allows). */
+  hostingerEnsureWildcardCname: process.env.HOSTINGER_ENSURE_WILDCARD_CNAME === "true",
 };
 
 validateSecretsMasterKeyStrength(module.exports.secretsMasterKey, process.env.NODE_ENV || "");

@@ -13,7 +13,9 @@
     "worker:dns:once": "node scripts/worker-dns-once.js",
     "worker:ssl": "node workers/sslStatusWorker.js",
     "worker:ssl:once": "node scripts/worker-ssl-once.js",
-    "create:admin": "node scripts/createAdminAccount.js"
+    "create:admin": "node scripts/createAdminAccount.js",
+    "audit:hostinger": "node scripts/hostinger-platform-audit.js",
+    "fix:tenant-dns": "node scripts/fix-all-tenant-dns.js"
   },
   "engines": {
     "node": ">=18"

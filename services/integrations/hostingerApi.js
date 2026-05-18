@@ -4,6 +4,43 @@
  */
 
 const HOSTINGER_API_BASE = "https://developers.hostinger.com";
+const LOG_PREFIX = "[hostinger-api]";
+
+/** @param {unknown} value @param {number} [maxLen] */
+function safeJson(value, maxLen = 2500) {
+  try {
+    const s = JSON.stringify(value);
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+  } catch {
+    return String(value);
+  }
+}
+
+/** @param {unknown} data */
+function summarizeResponseData(data) {
+  if (data == null) return "null";
+  if (Array.isArray(data)) return `array(${data.length})`;
+  if (Array.isArray(data?.data)) return `data[${data.data.length}]`;
+  if (typeof data.domain === "string") return `domain=${data.domain}`;
+  if (typeof data.is_accessible === "boolean") {
+    return `is_accessible=${data.is_accessible}`;
+  }
+  return safeJson(data, 800);
+}
+
+/**
+ * @param {"log"|"error"} level
+ * @param {...unknown} args
+ */
+function logHostinger(level, ...args) {
+  if (level === "error") {
+    // eslint-disable-next-line no-console
+    console.error(LOG_PREFIX, ...args);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(LOG_PREFIX, ...args);
+  }
+}
 
 /**
  * @param {string} token
@@ -13,6 +50,7 @@ const HOSTINGER_API_BASE = "https://developers.hostinger.com";
 async function hostingerRequest(token, path, opts = {}) {
   const t = String(token || "").trim();
   if (!t) {
+    logHostinger("error", "request skipped — empty API token", { path });
     return { ok: false, status: 400, message: "Empty Hostinger API token" };
   }
   const method = opts.method || "GET";
@@ -24,6 +62,9 @@ async function hostingerRequest(token, path, opts = {}) {
   if (opts.body != null) {
     headers["Content-Type"] = "application/json";
   }
+
+  logHostinger("log", "→", method, path, opts.body != null ? { body: opts.body } : "");
+
   try {
     const res = await fetch(url, {
       method,
@@ -42,11 +83,15 @@ async function hostingerRequest(token, path, opts = {}) {
         (data && typeof data.error === "string" && data.error) ||
         (data && typeof data.message === "string" && data.message) ||
         `Hostinger API HTTP ${res.status}`;
+      logHostinger("error", "←", method, path, res.status, msg, safeJson(data));
       return { ok: false, status: res.status, message: msg, data };
     }
+    logHostinger("log", "←", method, path, res.status, summarizeResponseData(data));
     return { ok: true, status: res.status, data };
   } catch (e) {
-    return { ok: false, status: 0, message: e.message || "Hostinger request failed" };
+    const msg = e.message || "Hostinger request failed";
+    logHostinger("error", "←", method, path, "network/error", msg);
+    return { ok: false, status: 0, message: msg };
   }
 }
 
@@ -195,15 +240,19 @@ async function createHostingWebsite(token, body) {
   const domain = String(body?.domain || "").trim().toLowerCase();
   const orderId = Number(body?.order_id);
   if (!domain || !Number.isFinite(orderId) || orderId <= 0) {
+    logHostinger("error", "createHostingWebsite validation failed", { domain, orderId });
     return { ok: false, status: 400, message: "domain and order_id are required" };
   }
+  logHostinger("log", "createHostingWebsite (subdomain vhost)", { domain, order_id: Math.floor(orderId) });
   const out = await hostingerRequest(token, "/api/hosting/v1/websites", {
     method: "POST",
     body: { domain, order_id: Math.floor(orderId) },
   });
   if (!out.ok) {
+    logHostinger("error", "createHostingWebsite failed", domain, out.status, out.message);
     return { ok: false, status: out.status, message: out.message, data: out.data };
   }
+  logHostinger("log", "createHostingWebsite OK — Hostinger is provisioning async", domain);
   return { ok: true, status: out.status, message: "Website creation requested on Hostinger" };
 }
 
